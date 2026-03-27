@@ -43,7 +43,7 @@ function Navbar() {
             <div className="bg-primary-100 p-2 rounded-lg group-hover:bg-primary-200 transition-colors">
               <HeartPulse className="w-6 h-6 text-primary-600" />
             </div>
-            <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-primary-600 to-teal-600">
+            <span className="text-xl font-bold bg-clip-text text-primary-600 bg-gradient-to-r from-primary-600 to-teal-600">
               CareCommunity
             </span>
           </Link>
