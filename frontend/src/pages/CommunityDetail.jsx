@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
-import { Shield, Users, Lock, Unlock, Check, X, ShieldAlert, Trash2 } from 'lucide-react';
+import { formatDistanceToNow } from 'date-fns';
+import { Shield, Users, Lock, Unlock, Check, X, ShieldAlert, Trash2, MessageCircle, MapPin, Clock, AlertTriangle, HelpCircle, PlusCircle } from 'lucide-react';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
 
@@ -11,6 +12,7 @@ export default function CommunityDetail() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [comm, setComm] = useState(null);
+  const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -21,6 +23,8 @@ export default function CommunityDetail() {
     try {
       const res = await axios.get(`${API_URL}/communities/${id}`);
       setComm(res.data);
+      const postRes = await axios.get(`${API_URL}/communities/${id}/posts`, { withCredentials: true });
+      setPosts(postRes.data);
     } catch (err) {
       if (err.response?.status === 404) navigate('/communities');
       console.error(err);
@@ -148,6 +152,66 @@ export default function CommunityDetail() {
                   </li>
                 ))}
               </ul>
+            </div>
+
+            <div className="mt-12 space-y-6">
+              <div className="flex justify-between items-center">
+                <h2 className="text-2xl font-bold flex items-center">Posts</h2>
+                <Link to={`/create?communityId=${id}`} className="btn-primary py-2 px-4 flex items-center text-sm">
+                  <PlusCircle className="w-4 h-4 mr-1.5" />
+                  Create Post
+                </Link>
+              </div>
+
+              {posts.length === 0 ? (
+                <div className="text-center py-12 bg-white rounded-2xl border border-dashed border-gray-300">
+                  <HelpCircle className="mx-auto h-12 w-12 text-gray-400" />
+                  <h3 className="mt-2 text-sm font-medium text-gray-900">No posts yet</h3>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {posts.map(post => (
+                    <Link key={post.id} to={`/post/${post.id}`} className="group block">
+                      <div className={`p-6 bg-white rounded-xl border transition-all ${post.type === 'emergency' ? 'border-emergency-300 hover:border-emergency-500 shadow-emergency-50' : 'border-gray-200 hover:border-primary-400 hover:shadow-md'}`}>
+                        <div className="flex justify-between items-center mb-3">
+                          <div className="flex items-center space-x-2">
+                             {post.type === 'emergency' ? (
+                               <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-emergency-100 text-emergency-700 uppercase">
+                                 <AlertTriangle className="w-3 h-3 mr-1" /> Emergency
+                               </span>
+                             ) : (
+                               <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-primary-100 text-primary-700 uppercase">
+                                 <HelpCircle className="w-3 h-3 mr-1" /> Query
+                               </span>
+                             )}
+                             <span className="text-xs text-gray-500 flex items-center">
+                               <Clock className="w-3 h-3 mr-1" /> {formatDistanceToNow(new Date(post.created_at), { addSuffix: true })}
+                             </span>
+                          </div>
+                        </div>
+                        <h3 className={`text-lg font-bold mb-1 group-hover:text-primary-600 transition-colors ${post.type === 'emergency' ? 'text-emergency-700' : 'text-gray-900'}`}>{post.title}</h3>
+                        <p className="text-gray-600 line-clamp-2 text-sm mb-3">{post.content}</p>
+                        
+                        <div className="flex items-center justify-between mt-4">
+                          <div className="flex items-center text-xs text-gray-500">
+                            <span className="font-medium text-gray-900 mr-2">{post.author_name}</span>
+                            {post.location && (
+                              <span className="flex items-center text-gray-500 before:content-['•'] before:mx-2">
+                                <MapPin className="w-3 h-3 mr-1 text-emergency-500" />
+                                {post.location}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center text-gray-500 group-hover:text-primary-600 font-medium text-sm">
+                            <MessageCircle className="w-4 h-4 mr-1" />
+                            {post.comment_count}
+                          </div>
+                        </div>
+                      </div>
+                    </Link>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 

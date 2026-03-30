@@ -112,10 +112,15 @@ export default function Feed() {
                   </p>
                   
                   <div className="flex items-center justify-between mt-auto pt-4 border-t border-gray-100/50">
-                    <div className="flex items-center text-sm text-gray-500">
+                    <div className="flex items-center text-sm text-gray-500 flex-wrap gap-2">
                       <span className="font-medium text-gray-900 mr-2">{post.author_name || 'Anonymous User'}</span>
+                      {post.community_name && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
+                          {post.community_name}
+                        </span>
+                      )}
                       {post.location && (
-                        <span className="flex items-center text-gray-500 before:content-['•'] before:mx-2">
+                        <span className="flex flex-wrap items-center text-gray-500 before:content-['•'] before:mx-2">
                           <MapPin className="w-4 h-4 mr-1 text-emergency-500" />
                           {post.location}
                         </span>

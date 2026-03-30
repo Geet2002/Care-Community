@@ -88,18 +88,22 @@ app.get('/api/auth/me', authenticate, async (req, res) => {
 // ======================= POST ROUTES (Legacy / Updated) =======================
 
 // Get all general posts (where community_id is null)
-app.get('/api/posts', async (req, res) => {
+app.get('/api/posts', authenticate, async (req, res) => {
   try {
+    const userId = req.user.id;
     const [rows] = await pool.query(`
-      SELECT p.*, u.username as author_name,
-      (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comment_count
+      SELECT p.*, u.username as author_name, c.name as community_name,
+      (SELECT COUNT(*) FROM comments cm WHERE cm.post_id = p.id) as comment_count
       FROM posts p
       LEFT JOIN users u ON p.author_id = u.id
-      WHERE p.community_id IS NULL
+      LEFT JOIN communities c ON p.community_id = c.id
+      WHERE p.community_id IS NULL OR p.community_id IN (
+        SELECT community_id FROM community_members WHERE user_id = ? AND status = 'approved'
+      )
       ORDER BY 
         p.type = 'emergency' DESC, 
         p.created_at DESC
-    `);
+    `, [userId]);
     res.json(rows);
   } catch (error) {
     console.error(error);
@@ -110,13 +114,30 @@ app.get('/api/posts', async (req, res) => {
 // Create Global Post
 app.post('/api/posts', authenticate, async (req, res) => {
   try {
-    const { title, content, type, location } = req.body;
+    const { title, content, type, location, community_id } = req.body;
     const author_id = req.user.id;
+    const finalCommunityId = community_id || null;
+
     const [result] = await pool.query(
-      `INSERT INTO posts (title, content, type, location, author_id, community_id) VALUES (?, ?, ?, ?, ?, NULL)`,
-      [title, content, type || 'query', location || null, author_id]
+      `INSERT INTO posts (title, content, type, location, author_id, community_id) VALUES (?, ?, ?, ?, ?, ?)`,
+      [title, content, type || 'query', location || null, author_id, finalCommunityId]
     );
-    res.json({ id: result.insertId, title, content, type, location, author_id });
+
+    if (finalCommunityId) {
+      // Notify all approved members except author
+      const [members] = await pool.query(
+        `SELECT user_id FROM community_members WHERE community_id = ? AND status = 'approved' AND user_id != ?`,
+        [finalCommunityId, author_id]
+      );
+      for (let m of members) {
+        await pool.query(
+          `INSERT INTO notifications (user_id, type, content, related_id) VALUES (?, 'new_post', ?, ?)`,
+          [m.user_id, `New post: ${title}`, result.insertId]
+        );
+      }
+    }
+
+    res.json({ id: result.insertId, title, content, type, location, author_id, community_id: finalCommunityId });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Server error' });
@@ -124,22 +145,27 @@ app.post('/api/posts', authenticate, async (req, res) => {
 });
 
 // Get post details
-app.get('/api/posts/:id', async (req, res) => {
+app.get('/api/posts/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
+    const userId = req.user.id;
+    
     const [posts] = await pool.query(`
-      SELECT p.*, u.username as author_name 
-      FROM posts p LEFT JOIN users u ON p.author_id = u.id 
+      SELECT p.*, u.username as author_name, c.name as community_name
+      FROM posts p 
+      LEFT JOIN users u ON p.author_id = u.id 
+      LEFT JOIN communities c ON p.community_id = c.id
       WHERE p.id = ?
     `, [id]);
 
     if (posts.length === 0) return res.status(404).json({ error: 'Not found' });
 
     const [comments] = await pool.query(`
-      SELECT c.*, u.username as author_name 
+      SELECT c.*, u.username as author_name,
+      (SELECT vote_type FROM comment_votes cv WHERE cv.comment_id = c.id AND cv.user_id = ?) as user_vote
       FROM comments c LEFT JOIN users u ON c.author_id = u.id 
       WHERE c.post_id = ? ORDER BY c.created_at ASC
-    `, [id]);
+    `, [userId, id]);
 
     res.json({ ...posts[0], comments });
   } catch (error) {
@@ -152,16 +178,60 @@ app.get('/api/posts/:id', async (req, res) => {
 app.post('/api/posts/:id/comments', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { content } = req.body;
+    const { content, parent_id } = req.body;
     const author_id = req.user.id;
 
     const [result] = await pool.query(
-      `INSERT INTO comments (post_id, author_id, content) VALUES (?, ?, ?)`,
-      [id, author_id, content]
+      `INSERT INTO comments (post_id, author_id, content, parent_id) VALUES (?, ?, ?, ?)`,
+      [id, author_id, content, parent_id || null]
     );
-    res.json({ id: result.insertId, post_id: id, author_id, content });
+    res.json({ id: result.insertId, post_id: id, author_id, content, parent_id: parent_id || null });
   } catch (error) {
     console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Comment Vote
+app.post('/api/comments/:id/vote', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { vote_type } = req.body; // 'like' or 'dislike' or null to remove
+    const userId = req.user.id;
+
+    // Get current vote
+    const [existing] = await pool.query('SELECT vote_type FROM comment_votes WHERE comment_id = ? AND user_id = ?', [id, userId]);
+
+    if (!vote_type) {
+      // Remove vote
+      if (existing.length > 0) {
+        await pool.query('DELETE FROM comment_votes WHERE comment_id = ? AND user_id = ?', [id, userId]);
+        const oldVote = existing[0].vote_type;
+        if (oldVote === 'like') await pool.query('UPDATE comments SET likes_count = likes_count - 1 WHERE id = ?', [id]);
+        if (oldVote === 'dislike') await pool.query('UPDATE comments SET dislikes_count = dislikes_count - 1 WHERE id = ?', [id]);
+      }
+      return res.json({ message: 'Vote removed' });
+    }
+
+    if (existing.length > 0) {
+      if (existing[0].vote_type !== vote_type) {
+        // Toggle vote
+        await pool.query('UPDATE comment_votes SET vote_type = ? WHERE comment_id = ? AND user_id = ?', [vote_type, id, userId]);
+        if (vote_type === 'like') {
+          await pool.query('UPDATE comments SET likes_count = likes_count + 1, dislikes_count = dislikes_count - 1 WHERE id = ?', [id]);
+        } else {
+          await pool.query('UPDATE comments SET dislikes_count = dislikes_count + 1, likes_count = likes_count - 1 WHERE id = ?', [id]);
+        }
+      }
+    } else {
+      // Insert new vote
+      await pool.query('INSERT INTO comment_votes (comment_id, user_id, vote_type) VALUES (?, ?, ?)', [id, userId, vote_type]);
+      if (vote_type === 'like') await pool.query('UPDATE comments SET likes_count = likes_count + 1 WHERE id = ?', [id]);
+      else await pool.query('UPDATE comments SET dislikes_count = dislikes_count + 1 WHERE id = ?', [id]);
+    }
+    res.json({ message: 'Vote recorded' });
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -231,6 +301,27 @@ app.get('/api/communities/:id', async (req, res) => {
     `, [id]);
 
     res.json({ ...comms[0], members });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get community posts
+app.get('/api/communities/:id/posts', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [rows] = await pool.query(`
+      SELECT p.*, u.username as author_name,
+      (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comment_count
+      FROM posts p
+      LEFT JOIN users u ON p.author_id = u.id
+      WHERE p.community_id = ?
+      ORDER BY 
+        p.type = 'emergency' DESC, 
+        p.created_at DESC
+    `, [id]);
+    res.json(rows);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Server error' });

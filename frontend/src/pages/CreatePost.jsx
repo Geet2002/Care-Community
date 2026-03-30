@@ -32,11 +32,13 @@ export default function CreatePost() {
     e.preventDefault();
     setLoading(true);
     try {
+      const communityId = queryParams.get('communityId');
       await axios.post(`${API_URL}/posts`, {
         title,
         content,
         type,
-        location: type === 'emergency' ? location : null
+        location: type === 'emergency' ? location : null,
+        community_id: communityId ? parseInt(communityId) : null
       });
       navigate('/');
     } catch (error) {
