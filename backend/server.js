@@ -4,12 +4,26 @@ const cookieParser = require('cookie-parser');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const mysql = require('mysql2/promise');
+const multer = require('multer');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
 app.use(cors({ origin: 'http://localhost:5173', credentials: true })); // necessary for cookies
 app.use(express.json());
 app.use(cookieParser());
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// Multer Storage Configuration
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, 'uploads/');
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + path.extname(file.originalname));
+  }
+});
+const upload = multer({ storage });
 
 const dbConfig = {
   host: process.env.DB_HOST || '127.0.0.1',
@@ -82,7 +96,58 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 app.get('/api/auth/me', authenticate, async (req, res) => {
-  res.json({ user: req.user });
+  try {
+    const [users] = await pool.query('SELECT id, username, profile_picture FROM users WHERE id = ?', [req.user.id]);
+    if (users.length === 0) return res.status(401).json({ error: 'User not found' });
+    res.json({ user: users[0] });
+  } catch(e) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ======================= USER PROFILE ROUTES =======================
+
+app.get('/api/users/profile', authenticate, async (req, res) => {
+  try {
+    const [users] = await pool.query(
+      `SELECT id, username, created_at, birthdate, description, gender, profile_picture FROM users WHERE id = ?`, 
+      [req.user.id]
+    );
+    if (users.length === 0) return res.status(404).json({ error: 'User not found' });
+    res.json(users[0]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/users/profile', authenticate, upload.single('profile_picture'), async (req, res) => {
+  try {
+    const { birthdate, description, gender } = req.body;
+    
+    // Ensure birthdate is valid if provided, else null
+    const finalBirthdate = birthdate || null;
+    const finalGender = gender || null;
+    const finalDesc = description || null;
+
+    if (req.file) {
+      const profile_picture = '/uploads/' + req.file.filename;
+      await pool.query(
+        `UPDATE users SET birthdate = ?, description = ?, gender = ?, profile_picture = ? WHERE id = ?`,
+        [finalBirthdate, finalDesc, finalGender, profile_picture, req.user.id]
+      );
+    } else {
+      await pool.query(
+        `UPDATE users SET birthdate = ?, description = ?, gender = ? WHERE id = ?`,
+        [finalBirthdate, finalDesc, finalGender, req.user.id]
+      );
+    }
+
+    res.json({ message: 'Profile updated successfully' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // ======================= POST ROUTES (Legacy / Updated) =======================
@@ -446,6 +511,69 @@ app.put('/api/notifications/:id/read', authenticate, async (req, res) => {
   }
 });
 
+// ======================= BLOOD DONATION ROUTES =======================
+
+app.get('/api/blood-requests', authenticate, async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT b.*, u.username as requester_name 
+      FROM blood_requests b 
+      JOIN users u ON b.user_id = u.id 
+      ORDER BY FIELD(b.status, 'pending', 'fulfilled'), b.created_at DESC
+    `);
+    res.json(rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/blood-requests', authenticate, async (req, res) => {
+  try {
+    const { patient_name, blood_group, units_required, location, urgency } = req.body;
+    const user_id = req.user.id;
+
+    const [result] = await pool.query(
+      `INSERT INTO blood_requests (user_id, patient_name, blood_group, units_required, location, urgency) VALUES (?, ?, ?, ?, ?, ?)`,
+      [user_id, patient_name, blood_group, units_required, location, urgency || 'high']
+    );
+
+    // Notify all other users about urgent blood requests
+    if (urgency === 'critical' || urgency === 'high') {
+      const [users] = await pool.query(`SELECT id FROM users WHERE id != ?`, [user_id]);
+      for (let u of users) {
+        await pool.query(
+          `INSERT INTO notifications (user_id, type, content, related_id) VALUES (?, 'blood_request', ?, ?)`,
+          [u.id, `Urgent Blood Request: ${blood_group} needed at ${location}`, result.insertId]
+        );
+      }
+    }
+
+    res.json({ id: result.insertId, message: 'Blood request created successfully' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/blood-requests/:id/fulfill', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user_id = req.user.id;
+
+    // Check if the user is the owner of the request
+    const [requests] = await pool.query(`SELECT user_id FROM blood_requests WHERE id = ?`, [id]);
+    if (requests.length === 0) return res.status(404).json({ error: 'Not found' });
+    if (requests[0].user_id !== user_id) return res.status(403).json({ error: 'Unauthorized' });
+
+    await pool.query(`UPDATE blood_requests SET status = 'fulfilled' WHERE id = ?`, [id]);
+    res.json({ message: 'Marked as fulfilled' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // ======================= DELETE ROUTES =======================
 
 app.delete('/api/posts/:id', authenticate, async (req, res) => {
@@ -485,6 +613,137 @@ app.delete('/api/communities/:id', authenticate, async (req, res) => {
 
     await pool.query('DELETE FROM communities WHERE id = ?', [id]);
     res.json({ message: 'Community deleted' });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ======================= HEALTH MOMENTS (INSTAGRAM-STYLE) =======================
+
+app.get('/api/health-shares', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const [rows] = await pool.query(`
+      SELECT hs.*, u.username as author_name,
+      (SELECT COUNT(*) FROM health_share_comments hsc WHERE hsc.share_id = hs.id) as comment_count,
+      (SELECT vote_type FROM health_share_votes hsv WHERE hsv.share_id = hs.id AND hsv.user_id = ?) as user_vote
+      FROM health_shares hs
+      JOIN users u ON hs.author_id = u.id
+      ORDER BY hs.created_at DESC
+    `, [userId]);
+    res.json(rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/health-shares', authenticate, upload.single('media'), async (req, res) => {
+  try {
+    const { content } = req.body;
+    const author_id = req.user.id;
+    
+    let media_url = null;
+    let media_type = null;
+
+    if (req.file) {
+      media_url = '/uploads/' + req.file.filename;
+      if (req.file.mimetype.startsWith('image/')) media_type = 'image';
+      else if (req.file.mimetype.startsWith('video/')) media_type = 'video';
+      else if (req.file.mimetype.startsWith('audio/')) media_type = 'audio';
+    }
+
+    const [result] = await pool.query(
+      `INSERT INTO health_shares (author_id, content, media_url, media_type) VALUES (?, ?, ?, ?)`,
+      [author_id, content, media_url, media_type]
+    );
+
+    res.json({ id: result.insertId, message: 'Share posted successfully' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/health-shares/:id/vote', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { vote_type } = req.body; // 'like' or 'dislike' or null
+    const userId = req.user.id;
+
+    const [existing] = await pool.query('SELECT vote_type FROM health_share_votes WHERE share_id = ? AND user_id = ?', [id, userId]);
+
+    if (!vote_type) {
+      if (existing.length > 0) {
+        await pool.query('DELETE FROM health_share_votes WHERE share_id = ? AND user_id = ?', [id, userId]);
+        const oldVote = existing[0].vote_type;
+        if (oldVote === 'like') await pool.query('UPDATE health_shares SET likes_count = likes_count - 1 WHERE id = ?', [id]);
+        if (oldVote === 'dislike') await pool.query('UPDATE health_shares SET dislikes_count = dislikes_count - 1 WHERE id = ?', [id]);
+      }
+      return res.json({ message: 'Vote removed' });
+    }
+
+    if (existing.length > 0) {
+      if (existing[0].vote_type !== vote_type) {
+        await pool.query('UPDATE health_share_votes SET vote_type = ? WHERE share_id = ? AND user_id = ?', [vote_type, id, userId]);
+        if (vote_type === 'like') await pool.query('UPDATE health_shares SET likes_count = likes_count + 1, dislikes_count = dislikes_count - 1 WHERE id = ?', [id]);
+        else await pool.query('UPDATE health_shares SET dislikes_count = dislikes_count + 1, likes_count = likes_count - 1 WHERE id = ?', [id]);
+      }
+    } else {
+      await pool.query('INSERT INTO health_share_votes (share_id, user_id, vote_type) VALUES (?, ?, ?)', [id, userId, vote_type]);
+      if (vote_type === 'like') await pool.query('UPDATE health_shares SET likes_count = likes_count + 1 WHERE id = ?', [id]);
+      else await pool.query('UPDATE health_shares SET dislikes_count = dislikes_count + 1 WHERE id = ?', [id]);
+    }
+    res.json({ message: 'Vote recorded' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.get('/api/health-shares/:id/comments', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [comments] = await pool.query(`
+      SELECT c.*, u.username as author_name 
+      FROM health_share_comments c 
+      JOIN users u ON c.author_id = u.id 
+      WHERE c.share_id = ? 
+      ORDER BY c.created_at ASC
+    `, [id]);
+    res.json(comments);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/health-shares/:id/comments', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { content } = req.body;
+    const author_id = req.user.id;
+
+    const [result] = await pool.query(
+      `INSERT INTO health_share_comments (share_id, author_id, content) VALUES (?, ?, ?)`,
+      [id, author_id, content]
+    );
+    res.json({ id: result.insertId, message: 'Comment added' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.delete('/api/health-shares/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [shares] = await pool.query('SELECT author_id FROM health_shares WHERE id = ?', [id]);
+    if (shares.length === 0) return res.status(404).json({ error: 'Not found' });
+    if (shares[0].author_id !== req.user.id) return res.status(403).json({ error: 'Unauthorized' });
+
+    await pool.query('DELETE FROM health_shares WHERE id = ?', [id]);
+    res.json({ message: 'Post deleted' });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }

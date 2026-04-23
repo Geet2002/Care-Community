@@ -77,23 +77,23 @@ export default function Communities() {
       ) : (
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredCommunities.map(comm => (
-            <Link key={comm.id} to={`/communities/${comm.id}`} className="block group">
-              <div className="card p-6 h-full flex flex-col hover:border-primary-300 relative">
+            <Link key={comm.id} to={`/communities/${comm.id}`} className="block group outline-none">
+              <div className="bg-white border border-gray-100 p-6 h-full flex flex-col rounded-3xl transition-all duration-300 hover:border-primary-200 hover:shadow-xl shadow-sm hover:shadow-primary-100/60 transform hover:-translate-y-1 relative">
                 <div className="flex justify-between items-start mb-4">
-                  <div className={`p-2 rounded-lg ${comm.is_private ? 'bg-orange-100 text-orange-600' : 'bg-primary-100 text-primary-600'}`}>
+                  <div className={`p-2.5 rounded-xl ${comm.is_private ? 'bg-orange-50 text-orange-600' : 'bg-primary-50 text-primary-600'}`}>
                     {comm.is_private ? <Lock className="w-5 h-5" /> : <Unlock className="w-5 h-5" />}
                   </div>
-                  <span className="text-xs text-gray-400 font-medium bg-gray-100 px-2 py-1 rounded-md">
+                  <span className="text-xs text-gray-400 font-bold bg-gray-50 px-2.5 py-1 rounded-md border border-gray-100">
                     {formatDistanceToNow(new Date(comm.created_at))} ago
                   </span>
                 </div>
                 
-                <h3 className="text-xl font-bold text-gray-900 group-hover:text-primary-600 transition-colors mb-2 pr-20">{comm.name}</h3>
+                <h3 className="text-xl font-bold text-gray-900 group-hover:text-primary-600 transition-colors mb-3 pr-2">{comm.name}</h3>
                 
-                <p className="text-sm text-gray-600 line-clamp-2 mb-6 flex-grow">{comm.description}</p>
+                <p className="text-sm text-gray-600 line-clamp-3 mb-6 flex-grow leading-relaxed">{comm.description}</p>
                 
-                <div className="flex items-center justify-between pt-4 border-t border-gray-100">
-                  <div className="flex items-center text-sm font-medium text-gray-500">
+                <div className="flex items-center justify-between pt-5 border-t border-gray-50">
+                  <div className="flex items-center text-sm font-bold text-gray-500">
                     <Users className="w-4 h-4 mr-1.5" /> {comm.member_count || 1} Member(s)
                   </div>
                   
@@ -101,15 +101,15 @@ export default function Communities() {
                     {!comm.user_status ? (
                       <button 
                         onClick={(e) => handleQuickJoin(e, comm.id)} 
-                        className="text-sm font-semibold bg-gray-100 text-primary-700 hover:bg-primary-100 px-3 py-1.5 rounded-lg transition-colors"
+                        className="text-sm font-bold bg-gray-50 text-primary-700 hover:bg-primary-100 hover:text-primary-800 px-4 py-2 rounded-xl transition-colors border border-gray-100"
                       >
                         Join
                       </button>
                     ) : comm.user_status === 'pending' ? (
-                      <span className="text-xs font-semibold bg-yellow-100 text-yellow-800 px-2 py-1.5 rounded-lg border border-yellow-200">Pending</span>
+                      <span className="text-xs font-bold bg-yellow-50 text-yellow-700 px-3 py-2 rounded-xl border border-yellow-200">Pending</span>
                     ) : (
-                      <span className="text-xs font-semibold bg-green-100 text-green-800 px-2 py-1.5 rounded-lg flex items-center border border-green-200">
-                        <CheckCircle2 className="w-3 h-3 mr-1" /> Joined
+                      <span className="text-xs font-bold bg-green-50 text-green-700 px-3 py-2 rounded-xl flex items-center border border-green-200">
+                        <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> Joined
                       </span>
                     )}
                   </div>
